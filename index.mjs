@@ -1,75 +1,117 @@
-const TELEGRAM_BOT_TOKEN = '5331314045:AAGteqffCXtxyNEM-l-6hFKieVzsKn3Lh_Y'
+/*
+  Бот-сервер для Youtube-downloader
 
-import TeleBot from "telebot";
+v1.0.0-020824
+
+  TODO:
+    * Отправлять ошибку если видео не найдено. Пример для теста: https://www.youtube.com/watch?v=ehZcWE
+    * Ограничивать количество попыток скачать видео
+    * Ограничивать количество попыток закачать видео на хостинг
+    * Уведомлять пользователя об ошибках
+
+  получить ссылку от человека
+  присвоить uuid
+  записать в БД:
+      url
+      uuid
+      tgUserID
+  отправить задачу
+  при получение статуса
+      отметить задачу в бд выполненной
+      отправить заказчику ссылку
+*/
+
+
+// config
+const ablyKey = 'IBK3WA.bMRjog:UwNFpacs1Pu98g_yXdowJNWLrF2NEAXbZzHKghS8_cw';
+const TELEGRAM_BOT_TOKEN = '497682600:AAEvCZCHXlRDM-lS3QHm571FID6d5_r3gsw'
+// TODO: сделать получение ключа с сервера (для не френдзоны)
 
 // init
+import Ably from 'ably';
+import TeleBot from "telebot";
+import SimplDB from 'simpl.db';
+import { v4 as uuidv4 } from 'uuid';
+
+const ably = new Ably.Realtime(ablyKey)
+const channel = ably.channels.get("get-started")
+const myUUID = uuidv4();
+
+// start
+const db = new SimplDB();
+// БД пользователей
+const Users = db.createCollection('users');
+// БД заданий
+const Tasks = db.createCollection('tasks');
+
+ably.connection.once("connected", () => {
+  console.log("SERVER: Connected to Ably!")
+})
+
 const bot = new TeleBot({
-    token: TELEGRAM_BOT_TOKEN,
+  token: TELEGRAM_BOT_TOKEN,
 })
 
-const getResultRegex = /{"id":"(.+)", "status":"done"}/gm;
-const urlRegex = /file\s+(.+?\.mp4)/;
+bot.on(/.*youtube.com\/.*/, (message) => {
+  const myUUID = uuidv4();
+  const today = new Date();
 
-// Это для общения с кожанным
-bot.on(['/start', '/hello'], async (msg) => {
-    let message = {};
-    message.userID = msg.from.id;
-    message.firstName = msg.from.first_name;
-    message.lastName = msg.from.last_name;
-    message.userName = msg.from.username; // ник
-    message.messageDate = msg.date;
-    message.messageText = msg.text;
-    message.messageChat = msg.chat.id;
+  console.log('[0] Human request', message.text)
+  Tasks.create({
+    id: myUUID,
+    tgId: message.from.id,
+    url: message.text,
+    addedAt: today,
+    complitedAt: ''
+  })
 
-    const { users } = db.data;
-    const userData =  users.find((users) => users.tgId === message.userID);
-    const today = new Date();
-    if (!userData) { // новый пользователь
-        // await db.update(({ users }) => users.push({
-        //     tgId: message.userID,
-        //     firstName: message.firstName,
-        //     lastName: message.lastName,
-        //     userName: message.userName,
-        //     registeredAt: today,
-        //     lastAccessAt: today
-        // }))
-        // msg.reply.text('Welcome!')
-    } else { //уже зареганый
-        userData.lastAccessAt = today
-        // db.update((userData) => {})
-        // msg.reply.text('Again')
-    }
-})
-
-// Это для общения с человеком
-bot.on(/.*youtube.com\/.*/, (msg) => {
-    // console.log(msg)
-    console.log('human request')
-    // messages.push(msg.text)
-    // emitter.emit('new_link')
+  channel.publish("first", `{"url":"${message.text}", "id":"${myUUID}"}`)
 });
 
-// Это для общения с исполнителем
-bot.on(getResultRegex, (msg) => {
-    console.log('bot responce')
-    console.log(msg)
-    // messages.push(msg.text)
-    // emitter.emit('new_link')
+// bot.on('text', async (message) => {
+//   console.log('human is here', message)
+// })
+
+bot.on(['/start', '/hello'], async (message) => {
+  const userData = Users.get(user => user.tgId === message.from.id); // { name: 'Peter', age: 20 }
+
+  const today = new Date();
+
+  if (!userData) { // новый пользователь
+    Users.create({
+      tgId: message.from.id,
+      firstName: message.from.first_name,
+      lastName: message.from.last_name,
+      userName: message.from.user_name,
+      registeredAt: today,
+      lastAccessAt: today
+    });
+
+  } else { //уже зареганый
+    Users.update(
+      user => user.tgId === message.from.id,
+      target => target.lastAccessAt = today
+    );
+  }
+})
+
+channel.subscribe("server", (message) => { // server - имя этого исполнителя
+  console.log("Message received: " + message.data)
+  const data = JSON.parse(message.data) // TODO try/catch
+  const today = new Date();
+
+  const task = Tasks.get(task => task.id === data.id);
+  Tasks.update(
+    task => task.complitedAt = today,
+    target => target.id = data.id
+  )
+
+  console.log(task, task.tgId)
+  bot.sendMessage(task.tgId, 'Задание выполнено! Можете скачать по адресу: https://triton.foundation/' + task.id + '.mp4');
+  // 284293876 - @rominsky
+  // 6605158418 Roman Milovsky
+
 });
 
 bot.start()
-// для теста
-bot.sendMessage('-1002238341419',`{"url":"https://www.youtube.com/watch?v=pVXSLTGzNLw", "id":"1001"}"`) // первый параметр - чат куда слать уведомления
-/*
-    получить ссылку от человека
-    присвоить uuid
-    записать в БД:
-        url
-        uuid
-        tgUserID
-    отправить задачу
-    при получение статуса
-        отметить задачу в бд выполненной
-        отправить заказчику ссылку
-*/
 
